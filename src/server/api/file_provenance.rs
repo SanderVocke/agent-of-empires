@@ -172,35 +172,51 @@ pub fn confine_path(
     Err((StatusCode::FORBIDDEN, "path not readable for this session"))
 }
 
-/// Read a confined target with a byte cap, opening it beneath a `cap_std`
-/// capability directory so the open is race-safe against a component swapped
-/// after [`confine_path`] validated containment.
+/// Open a confined target beneath a `cap_std` capability directory, so the open
+/// is race-safe against a component swapped after [`confine_path`] validated
+/// containment.
 ///
-/// Rejects non-regular files before reading, so a blocking or endless special
-/// file cannot stall or OOM the server, and reads at most `cap + 1` bytes to
-/// detect truncation. Binary content yields an empty string, matching the diff
-/// endpoint.
-pub fn read_confined(
+/// Rejects non-regular files, so a blocking or endless special file cannot
+/// stall or OOM the server. The stat before the open keeps a FIFO from blocking
+/// the open itself; the stat after it covers a swap in between.
+fn open_confined(
     confined: &Confined,
-    cap: usize,
-) -> Result<(String, bool, bool), (StatusCode, &'static str)> {
+) -> Result<(cap_std::fs::File, cap_std::fs::Metadata), (StatusCode, &'static str)> {
     let dir = Dir::open_ambient_dir(&confined.root, ambient_authority())
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "open root failed"))?;
     let rel = confined
         .canonical
         .strip_prefix(&confined.root)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "path not beneath root"))?;
-    // cap_std refuses `..` and escaping symlinks, so this open stays beneath
+    let not_regular = (StatusCode::BAD_REQUEST, "not a regular file");
+    // cap_std refuses `..` and escaping symlinks, so both calls stay beneath
     // `root` regardless of what changed since the canonicalize check.
-    let mut file = dir
+    let pre = dir
+        .metadata(rel)
+        .map_err(|_| (StatusCode::NOT_FOUND, "file not found"))?;
+    if !pre.is_file() {
+        return Err(not_regular);
+    }
+    let file = dir
         .open(rel)
         .map_err(|_| (StatusCode::NOT_FOUND, "file not found"))?;
     let meta = file
         .metadata()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "stat failed"))?;
     if !meta.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "not a regular file"));
+        return Err(not_regular);
     }
+    Ok((file, meta))
+}
+
+/// Read a confined target as text with a byte cap, reading at most `cap + 1`
+/// bytes to detect truncation. Binary content yields an empty string, matching
+/// the diff endpoint.
+pub fn read_confined(
+    confined: &Confined,
+    cap: usize,
+) -> Result<(String, bool, bool), (StatusCode, &'static str)> {
+    let (mut file, _) = open_confined(confined)?;
 
     let mut bytes = Vec::new();
     file.by_ref()
@@ -219,6 +235,28 @@ pub fn read_confined(
         String::from_utf8_lossy(&bytes).into_owned()
     };
     Ok((content, is_binary, truncated))
+}
+
+/// Read a confined target's raw bytes, refusing a file over `cap` bytes rather
+/// than truncating it.
+pub fn read_confined_bytes(
+    confined: &Confined,
+    cap: u64,
+) -> Result<Vec<u8>, (StatusCode, &'static str)> {
+    let too_large = (StatusCode::PAYLOAD_TOO_LARGE, "file too large");
+    let (file, meta) = open_confined(confined)?;
+    if meta.len() > cap {
+        return Err(too_large);
+    }
+    let mut bytes = Vec::new();
+    // The file can grow after the stat, so the read is bounded too.
+    file.take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "read failed"))?;
+    if bytes.len() as u64 > cap {
+        return Err(too_large);
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -443,6 +481,47 @@ mod tests {
             read(&roots, &touched, Path::new("sub")).unwrap_err().0,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    #[test]
+    fn read_confined_bytes_is_lossless_and_refuses_over_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let bytes = [0u8, 0xff, b'%', b'\n'];
+        fs::write(root.join("b.bin"), bytes).unwrap();
+        let confined = confine_path(
+            std::slice::from_ref(&root),
+            HashSet::new,
+            Path::new("b.bin"),
+        )
+        .unwrap();
+
+        assert_eq!(read_confined_bytes(&confined, 4).unwrap(), bytes);
+        assert_eq!(
+            read_confined_bytes(&confined, 3).unwrap_err().0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    /// Opening a FIFO for reading blocks until a writer appears, so it must be
+    /// refused before the open.
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        nix::unistd::mkfifo(&root.join("pipe"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let confined =
+            confine_path(std::slice::from_ref(&root), HashSet::new, Path::new("pipe")).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_confined_bytes(&confined, 1024).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("read blocked on the FIFO");
+        assert_eq!(result.unwrap_err().0, StatusCode::BAD_REQUEST);
     }
 
     /// The capability open is the TOCTOU defense, so provoke it directly: hand
