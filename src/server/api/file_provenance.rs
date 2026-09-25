@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use axum::http::StatusCode;
 use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 
 use crate::acp::state::Event;
 
@@ -177,8 +177,8 @@ pub fn confine_path(
 /// containment.
 ///
 /// Rejects non-regular files, so a blocking or endless special file cannot
-/// stall or OOM the server. The stat before the open keeps a FIFO from blocking
-/// the open itself; the stat after it covers a swap in between.
+/// stall or OOM the server. The open is non-blocking, so a FIFO cannot stall
+/// it before the check.
 fn open_confined(
     confined: &Confined,
 ) -> Result<(cap_std::fs::File, cap_std::fs::Metadata), (StatusCode, &'static str)> {
@@ -188,23 +188,21 @@ fn open_confined(
         .canonical
         .strip_prefix(&confined.root)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "path not beneath root"))?;
-    let not_regular = (StatusCode::BAD_REQUEST, "not a regular file");
-    // cap_std refuses `..` and escaping symlinks, so both calls stay beneath
+    // cap_std refuses `..` and escaping symlinks, so this open stays beneath
     // `root` regardless of what changed since the canonicalize check.
-    let pre = dir
-        .metadata(rel)
-        .map_err(|_| (StatusCode::NOT_FOUND, "file not found"))?;
-    if !pre.is_file() {
-        return Err(not_regular);
-    }
     let file = dir
-        .open(rel)
+        .open_with(
+            rel,
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_NONBLOCK),
+        )
         .map_err(|_| (StatusCode::NOT_FOUND, "file not found"))?;
     let meta = file
         .metadata()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "stat failed"))?;
     if !meta.is_file() {
-        return Err(not_regular);
+        return Err((StatusCode::BAD_REQUEST, "not a regular file"));
     }
     Ok((file, meta))
 }
@@ -503,8 +501,8 @@ mod tests {
         );
     }
 
-    /// Opening a FIFO for reading blocks until a writer appears, so it must be
-    /// refused before the open.
+    /// A blocking open of a FIFO waits for a writer, so the confined open must
+    /// be non-blocking for the FIFO to reach the regular-file check.
     #[cfg(unix)]
     #[test]
     fn refuses_a_fifo_without_blocking() {
