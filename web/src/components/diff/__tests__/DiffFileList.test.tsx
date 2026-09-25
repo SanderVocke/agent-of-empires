@@ -50,7 +50,7 @@ beforeEach(() => {
   window.localStorage.clear();
   mock.fetchBranches.mockReset();
   mock.setSessionDiffBase.mockReset().mockResolvedValue({});
-  openInNewTab.mockReset().mockResolvedValue(true);
+  openInNewTab.mockReset().mockResolvedValue({ ok: true });
   Element.prototype.scrollIntoView = vi.fn();
 });
 

@@ -1,12 +1,18 @@
+/** `status` is the HTTP status of a refused fetch; it is absent for a network error. */
+export type OpenResult = { ok: true } | { ok: false; status?: number };
+
+// Firefox can cancel a download whose blob URL is revoked in the same task as the click.
+const REVOKE_DOWNLOAD_URL_MS = 40_000;
+
 // Open a same-origin file through the token-injecting fetch, since a bare navigation lacks the Authorization header. The blob URL is left to the new tab.
-export async function openInNewTab(url: string, downloadName?: string): Promise<boolean> {
+export async function openInNewTab(url: string, downloadName?: string): Promise<OpenResult> {
   // Open synchronously while the click's activation is live, or the popup is blocked. `noopener` would make window.open return null.
   const tab = window.open("about:blank", "_blank");
   try {
     const r = await fetch(url);
     if (!r.ok) {
       tab?.close();
-      return false;
+      return { ok: false, status: r.status };
     }
     const blob = await r.blob();
     const objectUrl = URL.createObjectURL(blob);
@@ -17,8 +23,8 @@ export async function openInNewTab(url: string, downloadName?: string): Promise<
       link.href = objectUrl;
       link.download = downloadName ?? lastPathSegment(url);
       link.click();
-      URL.revokeObjectURL(objectUrl);
-      return true;
+      setTimeout(() => URL.revokeObjectURL(objectUrl), REVOKE_DOWNLOAD_URL_MS);
+      return { ok: true };
     }
     if (tab) {
       tab.location.href = objectUrl;
@@ -26,11 +32,11 @@ export async function openInNewTab(url: string, downloadName?: string): Promise<
       // Popup blocked anyway; last-resort direct open.
       window.open(objectUrl, "_blank", "noopener,noreferrer");
     }
-    return true;
+    return { ok: true };
   } catch {
     // A failed open is non-destructive.
     tab?.close();
-    return false;
+    return { ok: false };
   }
 }
 

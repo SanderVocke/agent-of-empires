@@ -118,8 +118,8 @@ pub struct Confined {
 ///
 /// Security invariants (#3088): the path is canonicalized before any containment
 /// check, and containment uses component-aware `Path::starts_with`, so
-/// `/repo-evil` is not under `/repo`. The open is delegated to
-/// [`read_confined`], which treats the returned `root` as a capability boundary.
+/// `/repo-evil` is not under `/repo`. The confined readers open the target
+/// beneath the returned `root`, which they treat as a capability boundary.
 pub fn confine_path(
     project_roots: &[PathBuf],
     touched: impl FnOnce() -> HashSet<PathBuf>,

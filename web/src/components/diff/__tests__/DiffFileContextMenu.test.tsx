@@ -132,13 +132,17 @@ describe("DiffFileContextMenu", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("toasts when the file cannot be opened", async () => {
+  it.each([
+    [404, "gone.bin is not in the worktree"],
+    [413, "gone.bin is too large to open (over 50 MiB)"],
+    [500, "Couldn't open gone.bin"],
+  ])("toasts why the file cannot be opened (HTTP %i)", async (status, message) => {
     const tab = stubTab();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
     const toast = stubToast();
     openMenu({ path: "gone.bin", file: file({ path: "gone.bin" }) });
     fireEvent.click(screen.getByText("Open file"));
-    await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't open gone.bin"));
+    await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
     expect(fetch).toHaveBeenCalledWith("/api/sessions/s1/diff/file/raw?path=gone.bin");
     expect(tab.close).toHaveBeenCalled();
   });

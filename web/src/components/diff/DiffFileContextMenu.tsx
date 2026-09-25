@@ -25,6 +25,12 @@ interface Props {
 const ITEM =
   "w-full px-3 py-1.5 text-left text-[13px] text-text-secondary hover:bg-surface-800 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
 
+function openFailureMessage(path: string, status?: number): string {
+  if (status === 404) return `${path} is not in the worktree`;
+  if (status === 413) return `${path} is too large to open (over 50 MiB)`;
+  return `Couldn't open ${path}`;
+}
+
 /** Changed-file actions at the click position, clamped to the viewport. */
 export function DiffFileContextMenu({ menu, sessionId, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -74,8 +80,8 @@ export function DiffFileContextMenu({ menu, sessionId, onClose }: Props) {
   };
   const openFile = (id: string, target: RichDiffFile) => {
     const name = target.path.slice(target.path.lastIndexOf("/") + 1);
-    void openInNewTab(sessionDiffRawFileUrl(id, target.path, target.repo_name), name).then((ok) => {
-      if (!ok) toastBus.handler?.error(`Couldn't open ${target.path}`);
+    void openInNewTab(sessionDiffRawFileUrl(id, target.path, target.repo_name), name).then((result) => {
+      if (!result.ok) toastBus.handler?.error(openFailureMessage(target.path, result.status));
     });
     onClose();
   };

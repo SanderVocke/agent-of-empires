@@ -21,6 +21,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -100,18 +101,22 @@ describe("openInNewTab", () => {
     ["the given name", "report.html", "report.html"],
     ["the URL's file name", undefined, "status page.html"],
   ])("saves an attachment under %s and closes the pre-opened tab", async (_, name, expected) => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     const response = new Response("<h1>hi</h1>", { headers: { "Content-Disposition": "attachment" } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
     const tab = { location: { href: "" }, close: vi.fn() };
     const open = vi.fn(() => tab);
     vi.stubGlobal("open", open);
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    expect(await openInNewTab("/api/sessions/s1/artifacts/sub/status%20page.html", name)).toBe(true);
+    expect(await openInNewTab("/api/sessions/s1/artifacts/sub/status%20page.html", name)).toEqual({ ok: true });
     expect(tab.close).toHaveBeenCalled();
     expect(tab.location.href).toBe("");
     const link = click.mock.contexts[0] as HTMLAnchorElement;
     expect(link.href).toBe("blob:mock-url");
     expect(link.download).toBe(expected);
+    // Revoked later, so the browser can still read the blob for the download.
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    vi.runAllTimers();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
   });
 });
