@@ -10,7 +10,7 @@ pub(super) const MAX_RAW_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// `resolve_artifact_path` canonicalizes and confines the request to the
 /// session's artifact root, so neither `..` nor a symlink can escape it.
 /// Scriptable types (HTML, SVG, XML) are always downloaded, never rendered,
-/// by [`raw_file_response`] (#2587).
+/// by `raw_file_response` (#2587).
 pub async fn serve_session_artifact(Path((id, path)): Path<(String, String)>) -> impl IntoResponse {
     let resolved = tokio::task::spawn_blocking(move || {
         crate::session::artifacts::resolve_artifact_path(&id, &path)
